@@ -4,7 +4,12 @@ from typing import Any, TypedDict
 
 
 class AgentState(TypedDict, total=False):
+    original_query: str
     query: str
+    rewritten_query: str | None
+    retry_count: int
+    max_retries: int
+    rewrite_history: list[dict[str, Any]]
     intent: str
     tool_name: str | None
     tool_args: dict[str, Any]

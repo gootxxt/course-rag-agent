@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Implemented:
+
+- Added query rewrite node for low-relevance retrieval.
+- Added retry loop from `relevance_check` to `rewrite` back to `retrieve`.
+- Added `retry_count`, `max_retries`, `rewritten_query`, and `rewrite_history` state fields.
+- Added loop guard so low-relevance queries are refused after retry limit.
+- Added Phase 3 documentation and demo commands.
+
 ## v0.4.0 - LangGraph Conditional Routing Agent
 
 Current local milestone.

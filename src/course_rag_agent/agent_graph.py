@@ -45,9 +45,11 @@ def _route_after_intent(state: AgentState) -> str:
     return _next_after_intent(state.get("intent", "unknown"))
 
 
-def _next_after_relevance(relevance_passed: bool, refused: bool) -> str:
+def _next_after_relevance(relevance_passed: bool, refused: bool, retry_count: int, max_retries: int) -> str:
     if relevance_passed and not refused:
         return "compress"
+    if not refused and retry_count < max_retries:
+        return "rewrite"
     return "final"
 
 
@@ -55,6 +57,8 @@ def _route_after_relevance(state: AgentState) -> str:
     return _next_after_relevance(
         bool(state.get("relevance_passed", False)),
         bool(state.get("refused", False)),
+        int(state.get("retry_count", 0)),
+        int(state.get("max_retries", settings.max_retries)),
     )
 
 
@@ -153,6 +157,87 @@ def _fallback_answer_from_context(query: str, context: str, citations: list[dict
     return "\n".join(lines)
 
 
+def _summarize_hits_for_rewrite(hits: list[dict[str, Any]], limit: int = 3) -> str:
+    summaries: list[str] = []
+    for hit in hits[:limit]:
+        text = str(hit.get("text", "")).replace("\n", " ").strip()
+        if len(text) > 220:
+            text = text[:220] + "..."
+        summaries.append(
+            f"- source={hit.get('source', '')}, score={float(hit.get('score', 0.0)):.4f}, text={text}"
+        )
+    return "\n".join(summaries) if summaries else "No useful retrieval hits."
+
+
+def _clean_rewritten_query(text: str, fallback_query: str) -> str:
+    cleaned = text.strip().strip('"').strip("'").replace("\n", " ")
+    cleaned = " ".join(cleaned.split())
+    return cleaned or fallback_query
+
+
+def _fallback_rewrite_query(original_query: str, old_query: str, hits: list[dict[str, Any]]) -> str:
+    terms: list[str] = []
+    for hit in hits[:2]:
+        source = str(hit.get("source", "")).replace("_", " ")
+        for token in source.replace(".", " ").replace("-", " ").split():
+            if len(token) >= 4 and token.lower() not in {item.lower() for item in terms}:
+                terms.append(token)
+            if len(terms) >= 4:
+                break
+        if len(terms) >= 4:
+            break
+
+    base_query = original_query or old_query
+    if not terms:
+        return base_query
+    return f"{base_query} {' '.join(terms)}"
+
+
+def _rewrite_query(
+    *,
+    original_query: str,
+    old_query: str,
+    hits: list[dict[str, Any]],
+    reason: str,
+    retry_count: int,
+    app_settings: Settings,
+) -> str:
+    if not app_settings.openai_api_key:
+        return _fallback_rewrite_query(original_query, old_query, hits)
+
+    client = OpenAI(api_key=app_settings.openai_api_key, base_url=app_settings.openai_base_url)
+    hit_summary = _summarize_hits_for_rewrite(hits)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You rewrite user questions into better search queries for a local course-material RAG system. "
+                "Preserve the user's original intent. Do not broaden the question. "
+                "Prefer concrete technical terms, aliases, and likely document keywords. "
+                "Return only one rewritten query, without explanation."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Original question:\n{original_query}\n\n"
+                f"Current search query:\n{old_query}\n\n"
+                f"Failure reason:\n{reason}\n\n"
+                f"Retry attempt:\n{retry_count + 1}\n\n"
+                f"Low-relevance retrieval summary:\n{hit_summary}\n\n"
+                "Rewrite the search query. Keep it specific and faithful to the original question."
+            ),
+        },
+    ]
+    response = client.chat.completions.create(
+        model=app_settings.openai_model,
+        messages=messages,
+        temperature=0.0,
+    )
+    content = response.choices[0].message.content or ""
+    return _clean_rewritten_query(content, old_query)
+
+
 def _generate_answer_from_context(
     query: str,
     context: str,
@@ -203,11 +288,16 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
 
     def intent_node(state: AgentState) -> AgentState:
         start = time.perf_counter()
-        query = state.get("query", "")
+        query = state.get("original_query") or state.get("query", "")
         intent = _classify_intent(query)
         next_node = _next_after_intent(intent)
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         return {
+            "original_query": query,
+            "query": state.get("query", query),
+            "retry_count": int(state.get("retry_count", 0)),
+            "max_retries": int(state.get("max_retries", app_settings.max_retries)),
+            "rewrite_history": list(state.get("rewrite_history", [])),
             "intent": intent,
             "tool_trace": _trace(
                 state,
@@ -262,7 +352,8 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
         }
 
     def retrieve_node(state: AgentState) -> AgentState:
-        query = state.get("query", "")
+        query = state.get("rewritten_query") or state.get("query") or state.get("original_query", "")
+        retry_count = int(state.get("retry_count", 0))
         tool_args = {"query": query, "top_k": app_settings.top_k, "mode": "hybrid"}
         start = time.perf_counter()
         result = executor.execute("rag_search", tool_args)
@@ -277,6 +368,7 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
             "retrieval_hits": hits,
             "hit_count": hit_count,
             "top_score": top_score,
+            "query": query,
             "tool_trace": _trace(
                 state,
                 node="retrieve_node",
@@ -285,6 +377,7 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
                 input_summary={"query": _summarize_query(query), **tool_args},
                 hit_count=hit_count,
                 top_score=top_score,
+                retry_count=retry_count,
                 latency_ms=latency_ms,
             ),
         }
@@ -295,27 +388,38 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
         hit_count = int(state.get("hit_count", len(hits)))
         top_score = state.get("top_score")
         threshold = app_settings.score_threshold
+        retry_count = int(state.get("retry_count", 0))
+        max_retries = int(state.get("max_retries", app_settings.max_retries))
         passed = hit_count > 0 and top_score is not None and float(top_score) >= threshold
-        next_node = _next_after_relevance(passed, not passed)
+        should_refuse = (not passed) and retry_count >= max_retries
+        next_node = _next_after_relevance(passed, should_refuse, retry_count, max_retries)
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
 
         if not passed:
+            reason = "low_relevance_after_retry" if should_refuse else "low_relevance"
+            answer = (
+                "I could not find enough relevant evidence in the local knowledge base after query rewrite."
+                if should_refuse
+                else ""
+            )
             return {
                 "relevance_passed": False,
-                "refused": True,
-                "reason": "low_relevance",
-                "answer": "I could not find enough relevant evidence in the local knowledge base.",
+                "refused": should_refuse,
+                "reason": reason,
+                "answer": answer,
                 "citations": [],
                 "tool_trace": _trace(
                     state,
                     node="relevance_check_node",
                     action="check_relevance",
-                    decision="refuse",
+                    decision="refuse" if should_refuse else "rewrite",
                     next_node=next_node,
-                    reason=f"top_score={top_score}, threshold={threshold}, hit_count={hit_count}",
+                    reason=f"top_score={top_score}, threshold={threshold}, hit_count={hit_count}, retry_count={retry_count}/{max_retries}",
                     hit_count=hit_count,
                     top_score=top_score,
                     threshold=threshold,
+                    retry_count=retry_count,
+                    max_retries=max_retries,
                     latency_ms=latency_ms,
                 ),
             }
@@ -334,6 +438,62 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
                 hit_count=hit_count,
                 top_score=top_score,
                 threshold=threshold,
+                retry_count=retry_count,
+                max_retries=max_retries,
+                latency_ms=latency_ms,
+            ),
+        }
+
+    def rewrite_node(state: AgentState) -> AgentState:
+        start = time.perf_counter()
+        original_query = state.get("original_query") or state.get("query", "")
+        old_query = state.get("query") or original_query
+        retry_count = int(state.get("retry_count", 0))
+        max_retries = int(state.get("max_retries", app_settings.max_retries))
+        reason = state.get("reason") or "low_relevance"
+        hits = state.get("retrieval_hits", [])
+
+        new_query = _rewrite_query(
+            original_query=original_query,
+            old_query=old_query,
+            hits=hits,
+            reason=reason,
+            retry_count=retry_count,
+            app_settings=app_settings,
+        )
+        new_retry_count = retry_count + 1
+        history = list(state.get("rewrite_history", []))
+        history.append(
+            {
+                "old_query": old_query,
+                "new_query": new_query,
+                "reason": reason,
+                "retry_count": new_retry_count,
+                "top_score": state.get("top_score"),
+                "hit_count": state.get("hit_count", 0),
+            }
+        )
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+
+        return {
+            "query": new_query,
+            "rewritten_query": new_query,
+            "retry_count": new_retry_count,
+            "max_retries": max_retries,
+            "rewrite_history": history,
+            "refused": False,
+            "reason": "rewritten_query",
+            "tool_trace": _trace(
+                state,
+                node="rewrite_node",
+                action="rewrite_query",
+                decision="retry_retrieve",
+                next_node="retrieve",
+                old_query=_summarize_query(old_query),
+                new_query=_summarize_query(new_query),
+                reason=reason,
+                retry_count=new_retry_count,
+                max_retries=max_retries,
                 latency_ms=latency_ms,
             ),
         }
@@ -375,7 +535,12 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
             }
 
         start = time.perf_counter()
-        answer = _generate_answer_from_context(state.get("query", ""), context, citations, app_settings)
+        answer = _generate_answer_from_context(
+            state.get("original_query") or state.get("query", ""),
+            context,
+            citations,
+            app_settings,
+        )
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         return {
             "answer": answer,
@@ -434,6 +599,7 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
     graph.add_node("refuse", refuse_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("relevance_check", relevance_check_node)
+    graph.add_node("rewrite", rewrite_node)
     graph.add_node("compress", compress_node)
     graph.add_node("generate", generate_node)
     graph.add_node("final", final_node)
@@ -456,9 +622,11 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
         _route_after_relevance,
         {
             "compress": "compress",
+            "rewrite": "rewrite",
             "final": "final",
         },
     )
+    graph.add_edge("rewrite", "retrieve")
     graph.add_edge("compress", "generate")
     graph.add_edge("generate", "final")
     graph.add_edge("final", END)
@@ -467,5 +635,13 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
 
 def run_agent(query: str, kb: KnowledgeBase | None = None, app_settings: Settings = settings) -> AgentState:
     graph = build_agent_graph(kb, app_settings)
-    return graph.invoke({"query": query, "tool_trace": []})
-
+    return graph.invoke(
+        {
+            "original_query": query,
+            "query": query,
+            "retry_count": 0,
+            "max_retries": max(0, app_settings.max_retries),
+            "rewrite_history": [],
+            "tool_trace": [],
+        }
+    )
