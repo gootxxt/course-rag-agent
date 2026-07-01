@@ -1,0 +1,34 @@
+# Changelog
+
+## v0.4.0 - LangGraph Conditional Routing Agent
+
+Current local milestone.
+
+Implemented:
+
+- Local RAG knowledge base for txt, md, and pdf files.
+- Chroma vector store with metadata and chunk deduplication.
+- BM25 keyword retrieval.
+- Hybrid retrieval with vector and BM25 score fusion.
+- OpenAI-compatible LLM generation.
+- CLI commands for import, update, delete, stats, ask, and agent demo.
+- FastAPI endpoints for document operations, ask, stats, and agent execution.
+- ToolExecutor layer with function-calling style tool schemas.
+- LangGraph AgentState.
+- Phase 1 visible RAG workflow: retrieve, relevance check, compress, generate, final.
+- Phase 2 conditional routing with `add_conditional_edges`.
+- Structured `tool_trace` with node decisions and next-node records.
+
+Not yet implemented:
+
+- Query rewrite.
+- Retry loop.
+- LLM self-check.
+- Benchmark and ablation experiments.
+
+## Suggested Future Versions
+
+- `v0.5.0`: query rewrite and retry loop.
+- `v0.6.0`: self-check node.
+- `v0.7.0`: benchmark, Recall@K, Precision@K, refusal rate, latency metrics.
+- `v1.0.0`: resume-ready final version with README, architecture docs, and interview notes.
