@@ -1,0 +1,41 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local IDE files
+.vscode/
+.idea/
+
+# Local RAG indexes and generated storage
+storage/**
+!storage/
+!storage/**/
+!storage/**/.gitkeep
+
+# Private or copyrighted local documents
+data/my_docs/
+
+# Logs and temporary files
+*.log
+tmp/
+temp/

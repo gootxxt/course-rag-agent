@@ -1,0 +1,15 @@
+[project]
+name = "course-rag-agent"
+version = "0.1.0"
+description = "Local course-material RAG baseline with Chroma, BM25, CLI and FastAPI."
+requires-python = ">=3.10"
+
+[project.scripts]
+rag-agent = "course_rag_agent.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
