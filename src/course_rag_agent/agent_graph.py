@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import re
 from typing import Any
 
 from openai import OpenAI
@@ -59,6 +60,30 @@ def _route_after_relevance(state: AgentState) -> str:
         bool(state.get("refused", False)),
         int(state.get("retry_count", 0)),
         int(state.get("max_retries", settings.max_retries)),
+    )
+
+
+def _next_after_self_check(
+    self_check_passed: bool,
+    refused: bool,
+    generation_retry_count: int,
+    max_generation_retries: int,
+) -> str:
+    if self_check_passed:
+        return "final"
+    if refused:
+        return "final"
+    if generation_retry_count < max_generation_retries:
+        return "generate"
+    return "final"
+
+
+def _route_after_self_check(state: AgentState) -> str:
+    return _next_after_self_check(
+        bool(state.get("self_check_passed", False)),
+        bool(state.get("refused", False)),
+        int(state.get("generation_retry_count", 0)),
+        int(state.get("max_generation_retries", settings.max_generation_retries)),
     )
 
 
@@ -136,6 +161,72 @@ def _compress_hits(
     return "\n\n".join(context_blocks), citations, len(citations)
 
 
+def _citation_key(item: dict[str, Any]) -> tuple[str, str]:
+    return str(item.get("source", "")), str(item.get("chunk_id", ""))
+
+
+def _extract_inline_citation_ids(answer: str) -> list[int]:
+    ids: list[int] = []
+    for value in re.findall(r"\[(\d+)\]", answer):
+        try:
+            ids.append(int(value))
+        except ValueError:
+            continue
+    return ids
+
+
+def _rule_self_check(
+    *,
+    answer: str,
+    refused: bool,
+    citations: list[dict[str, Any]],
+    retrieval_hits: list[dict[str, Any]],
+    top_score: float | None,
+    threshold: float,
+) -> dict[str, Any]:
+    unsupported_claims: list[str] = []
+    answer_text = answer.strip()
+    inline_ids = _extract_inline_citation_ids(answer_text)
+    valid_hit_keys = {_citation_key(hit) for hit in retrieval_hits}
+    citation_keys = [_citation_key(citation) for citation in citations]
+    valid_citation_count = sum(1 for key in citation_keys if key in valid_hit_keys)
+
+    if not answer_text:
+        unsupported_claims.append("answer_empty")
+    if not refused and not citations:
+        unsupported_claims.append("missing_citations")
+    if citations and valid_citation_count != len(citations):
+        unsupported_claims.append("citation_not_from_retrieval_hits")
+    if not refused and answer_text and not inline_ids:
+        unsupported_claims.append("answer_missing_inline_citation")
+    if inline_ids and any(item < 1 or item > len(citations) for item in inline_ids):
+        unsupported_claims.append("inline_citation_out_of_range")
+    if any(phrase in answer_text for phrase in ("根据资料", "根据文档", "文档显示", "资料显示")) and not citations:
+        unsupported_claims.append("claims_evidence_without_citations")
+    if top_score is None or float(top_score) < threshold:
+        unsupported_claims.append("top_score_below_threshold")
+
+    valid_inline_ids = [item for item in inline_ids if 1 <= item <= len(citations)]
+    citation_coverage = 0.0
+    if inline_ids:
+        citation_coverage = len(valid_inline_ids) / len(inline_ids)
+    elif refused:
+        citation_coverage = 1.0
+
+    if unsupported_claims:
+        groundedness_score = max(0.0, min(1.0, citation_coverage * 0.7))
+    else:
+        groundedness_score = 1.0
+
+    return {
+        "passed": not unsupported_claims,
+        "reason": "ok" if not unsupported_claims else ",".join(unsupported_claims),
+        "unsupported_claims": unsupported_claims,
+        "citation_coverage": round(citation_coverage, 4),
+        "groundedness_score": round(groundedness_score, 4),
+    }
+
+
 def _fallback_answer_from_context(query: str, context: str, citations: list[dict[str, Any]]) -> str:
     lines = [
         "LLM is not configured. The following answer is an evidence summary from retrieved context.",
@@ -149,9 +240,9 @@ def _fallback_answer_from_context(query: str, context: str, citations: list[dict
     if citations:
         lines.append("")
         lines.append("Citations:")
-        for citation in citations:
+        for i, citation in enumerate(citations, start=1):
             lines.append(
-                f"- {citation['source']}#{citation['chunk_index']}:"
+                f"- [{i}] {citation['source']}#{citation['chunk_index']}:"
                 f"{citation['start_pos']}-{citation['end_pos']}"
             )
     return "\n".join(lines)
@@ -243,6 +334,7 @@ def _generate_answer_from_context(
     context: str,
     citations: list[dict[str, Any]],
     app_settings: Settings,
+    self_check_reason: str | None = None,
 ) -> str:
     if not app_settings.openai_api_key:
         return _fallback_answer_from_context(query, context, citations)
@@ -258,7 +350,8 @@ def _generate_answer_from_context(
             "content": (
                 "You are a course-material QA assistant. Answer only from the provided context. "
                 "If the context is insufficient, say the materials are insufficient. "
-                "Cite evidence using bracket ids like [1], [2]."
+                "Cite evidence using bracket ids like [1], [2]. "
+                "Do not make uncited factual claims."
             ),
         },
         {
@@ -267,6 +360,13 @@ def _generate_answer_from_context(
                 f"Question:\n{query}\n\n"
                 f"Context:\n{context}\n\n"
                 f"Available citations:\n" + "\n".join(citation_lines)
+                + (
+                    f"\n\nPrevious self-check failed because: {self_check_reason}\n"
+                    "Regenerate the answer and fix the issue. Add citations for supported claims, "
+                    "or say the materials are insufficient if evidence is missing."
+                    if self_check_reason
+                    else ""
+                )
             ),
         },
     ]
@@ -298,6 +398,10 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
             "retry_count": int(state.get("retry_count", 0)),
             "max_retries": int(state.get("max_retries", app_settings.max_retries)),
             "rewrite_history": list(state.get("rewrite_history", [])),
+            "generation_retry_count": int(state.get("generation_retry_count", 0)),
+            "max_generation_retries": int(
+                state.get("max_generation_retries", app_settings.max_generation_retries)
+            ),
             "intent": intent,
             "tool_trace": _trace(
                 state,
@@ -519,6 +623,13 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
     def generate_node(state: AgentState) -> AgentState:
         context = state.get("compressed_context") or ""
         citations = state.get("citations", [])
+        previous_self_check_failed = state.get("self_check_passed") is False
+        generation_retry_count = int(state.get("generation_retry_count", 0))
+        max_generation_retries = int(
+            state.get("max_generation_retries", app_settings.max_generation_retries)
+        )
+        current_generation_retry_count = generation_retry_count + 1 if previous_self_check_failed else generation_retry_count
+        self_check_reason = state.get("self_check_reason") if previous_self_check_failed else None
         if not context.strip():
             return {
                 "answer": "I could not build enough context from the retrieved evidence.",
@@ -529,7 +640,7 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
                     node="generate_node",
                     action="skip_generate",
                     decision="refuse",
-                    next_node="final",
+                    next_node="self_check",
                     reason="empty_context",
                 ),
             }
@@ -540,22 +651,82 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
             context,
             citations,
             app_settings,
+            self_check_reason=self_check_reason,
         )
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         return {
             "answer": answer,
             "refused": False,
             "reason": None,
+            "generation_retry_count": current_generation_retry_count,
             "tool_trace": _trace(
                 state,
                 node="generate_node",
-                action="generate_answer",
-                next_node="final",
-                input_summary={"context_chars": len(context), "citation_count": len(citations)},
+                action="regenerate_answer" if previous_self_check_failed else "generate_answer",
+                next_node="self_check",
+                input_summary={
+                    "context_chars": len(context),
+                    "citation_count": len(citations),
+                    "self_check_reason": self_check_reason,
+                },
                 output_summary={"answer_chars": len(answer)},
+                generation_retry_count=current_generation_retry_count,
+                max_generation_retries=max_generation_retries,
                 latency_ms=latency_ms,
             ),
         }
+
+    def self_check_node(state: AgentState) -> AgentState:
+        start = time.perf_counter()
+        result = _rule_self_check(
+            answer=state.get("answer", ""),
+            refused=bool(state.get("refused", False)),
+            citations=state.get("citations", []),
+            retrieval_hits=state.get("retrieval_hits", []),
+            top_score=state.get("top_score"),
+            threshold=app_settings.score_threshold,
+        )
+        passed = bool(result["passed"])
+        generation_retry_count = int(state.get("generation_retry_count", 0))
+        max_generation_retries = int(
+            state.get("max_generation_retries", app_settings.max_generation_retries)
+        )
+        refused = bool(state.get("refused", False))
+        next_node = _next_after_self_check(passed, refused, generation_retry_count, max_generation_retries)
+        reached_limit = (not passed) and (refused or generation_retry_count >= max_generation_retries)
+        latency_ms = round((time.perf_counter() - start) * 1000, 2)
+
+        update: AgentState = {
+            "self_check_passed": passed,
+            "self_check_reason": result["reason"],
+            "unsupported_claims": result["unsupported_claims"],
+            "citation_coverage": result["citation_coverage"],
+            "groundedness_score": result["groundedness_score"],
+            "tool_trace": _trace(
+                state,
+                node="self_check_node",
+                action="rule_self_check",
+                decision="pass" if passed else ("refuse" if reached_limit else "regenerate"),
+                next_node=next_node,
+                reason=result["reason"],
+                self_check_passed=passed,
+                citation_coverage=result["citation_coverage"],
+                groundedness_score=result["groundedness_score"],
+                unsupported_claims=result["unsupported_claims"],
+                generation_retry_count=generation_retry_count,
+                max_generation_retries=max_generation_retries,
+                latency_ms=latency_ms,
+            ),
+        }
+        if reached_limit:
+            update.update(
+                {
+                    "refused": True,
+                    "reason": "self_check_failed",
+                    "answer": "I generated an answer, but it did not pass evidence support checks.",
+                }
+            )
+        return update
 
     def final_node(state: AgentState) -> AgentState:
         start = time.perf_counter()
@@ -602,6 +773,7 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
     graph.add_node("rewrite", rewrite_node)
     graph.add_node("compress", compress_node)
     graph.add_node("generate", generate_node)
+    graph.add_node("self_check", self_check_node)
     graph.add_node("final", final_node)
 
     graph.set_entry_point("intent")
@@ -628,7 +800,15 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
     )
     graph.add_edge("rewrite", "retrieve")
     graph.add_edge("compress", "generate")
-    graph.add_edge("generate", "final")
+    graph.add_edge("generate", "self_check")
+    graph.add_conditional_edges(
+        "self_check",
+        _route_after_self_check,
+        {
+            "generate": "generate",
+            "final": "final",
+        },
+    )
     graph.add_edge("final", END)
     return graph.compile()
 
@@ -642,6 +822,10 @@ def run_agent(query: str, kb: KnowledgeBase | None = None, app_settings: Setting
             "retry_count": 0,
             "max_retries": max(0, app_settings.max_retries),
             "rewrite_history": [],
+            "self_check_passed": None,
+            "unsupported_claims": [],
+            "generation_retry_count": 0,
+            "max_generation_retries": max(0, app_settings.max_generation_retries),
             "tool_trace": [],
         }
     )

@@ -10,6 +10,13 @@ class AgentState(TypedDict, total=False):
     retry_count: int
     max_retries: int
     rewrite_history: list[dict[str, Any]]
+    self_check_passed: bool | None
+    self_check_reason: str | None
+    unsupported_claims: list[str]
+    citation_coverage: float | None
+    groundedness_score: float | None
+    generation_retry_count: int
+    max_generation_retries: int
     intent: str
     tool_name: str | None
     tool_args: dict[str, Any]

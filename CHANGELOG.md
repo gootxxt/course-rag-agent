@@ -9,6 +9,9 @@ Implemented:
 - Added `retry_count`, `max_retries`, `rewritten_query`, and `rewrite_history` state fields.
 - Added loop guard so low-relevance queries are refused after retry limit.
 - Added Phase 3 documentation and demo commands.
+- Added rule-based self-check node after answer generation.
+- Added self-check routing for pass, regenerate, and final refusal.
+- Added self-check state fields and unit tests for citation validation.
 
 ## v0.4.0 - LangGraph Conditional Routing Agent
 
