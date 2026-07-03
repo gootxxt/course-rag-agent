@@ -120,15 +120,49 @@ def _build_citation(hit: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _hit_final_score(hit: dict[str, Any]) -> float:
+    return float(hit.get("final_score", hit.get("score", 0.0)) or 0.0)
+
+
+def _standardize_hit(hit: Any, rank: int | None = None) -> dict[str, Any]:
+    if hasattr(hit, "model_dump"):
+        payload = hit.model_dump()
+    else:
+        payload = dict(hit)
+    final_score = float(payload.get("final_score", payload.get("score", 0.0)) or 0.0)
+    metadata = dict(payload.get("metadata", {}) or {})
+    return {
+        "chunk_id": str(payload.get("chunk_id", "")),
+        "doc_id": str(payload.get("doc_id", "")),
+        "source": str(payload.get("source", "")),
+        "text": str(payload.get("text", "")),
+        "vector_score": payload.get("vector_score"),
+        "bm25_score": payload.get("bm25_score"),
+        "final_score": final_score,
+        "score": final_score,
+        "rank": int(payload.get("rank") or rank or 0),
+        "start_pos": int(payload.get("start_pos", metadata.get("start_pos", 0)) or 0),
+        "end_pos": int(payload.get("end_pos", metadata.get("end_pos", 0)) or 0),
+        "chunk_index": int(payload.get("chunk_index", metadata.get("chunk_index", 0)) or 0),
+        "metadata": metadata,
+    }
+
+
+def _standardize_hits(hits: list[Any]) -> list[dict[str, Any]]:
+    return [_standardize_hit(hit, rank=index) for index, hit in enumerate(hits, start=1)]
+
+
 def _compress_hits(
     hits: list[dict[str, Any]],
     *,
     char_budget: int = DEFAULT_CONTEXT_BUDGET,
-) -> tuple[str, list[dict[str, Any]], int]:
-    sorted_hits = sorted(hits, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+) -> tuple[str, list[dict[str, Any]], dict[str, dict[str, Any]], int, float]:
+    raw_chars = sum(len(str(hit.get("text", ""))) for hit in hits)
+    sorted_hits = sorted(hits, key=_hit_final_score, reverse=True)
     seen: set[str] = set()
-    context_blocks: list[str] = []
+    context_groups: list[dict[str, Any]] = []
     citations: list[dict[str, Any]] = []
+    citation_map: dict[str, dict[str, Any]] = {}
     used_chars = 0
 
     for hit in sorted_hits:
@@ -142,23 +176,53 @@ def _compress_hits(
             continue
 
         citation = _build_citation(hit)
-        header = (
-            f"[{len(citations) + 1}] source={citation['source']} "
-            f"chunk={citation['chunk_index']} pos={citation['start_pos']}-{citation['end_pos']} "
-            f"score={float(hit.get('score', 0.0)):.4f}"
-        )
-        block = f"{header}\n{text}"
+        citation_id = str(len(citations) + 1)
+        citation["citation_id"] = citation_id
+        citation["final_score"] = _hit_final_score(hit)
+        citation["vector_score"] = hit.get("vector_score")
+        citation["bm25_score"] = hit.get("bm25_score")
+
+        block_text = f"[{citation_id}] {text}"
         remaining = char_budget - used_chars
         if remaining <= 0:
             break
-        if len(block) > remaining:
-            block = block[:remaining]
+        if len(block_text) > remaining:
+            block_text = block_text[:remaining]
 
-        context_blocks.append(block)
         citations.append(citation)
-        used_chars += len(block)
+        citation_map[citation_id] = citation
+        used_chars += len(block_text)
 
-    return "\n\n".join(context_blocks), citations, len(citations)
+        previous = context_groups[-1] if context_groups else None
+        if previous and previous["source"] == citation["source"]:
+            previous["citation_ids"].append(citation_id)
+            previous["texts"].append(block_text)
+            previous["end_pos"] = citation["end_pos"]
+        else:
+            context_groups.append(
+                {
+                    "source": citation["source"],
+                    "start_pos": citation["start_pos"],
+                    "end_pos": citation["end_pos"],
+                    "citation_ids": [citation_id],
+                    "texts": [block_text],
+                }
+            )
+
+    context_blocks: list[str] = []
+    for group in context_groups:
+        ids = ",".join(group["citation_ids"])
+        header = (
+            f"[citations:{ids}] source={group['source']} "
+            f"pos={group['start_pos']}-{group['end_pos']}"
+        )
+        context_blocks.append(header + "\n" + "\n".join(group["texts"]))
+
+    context = "\n\n".join(context_blocks)
+    if len(context) > char_budget:
+        context = context[:char_budget]
+    compression_ratio = round(min(1.0, len(context) / raw_chars), 4) if raw_chars else 0.0
+    return context, citations, citation_map, len(citations), compression_ratio
 
 
 def _citation_key(item: dict[str, Any]) -> tuple[str, str]:
@@ -461,9 +525,9 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
         tool_args = {"query": query, "top_k": app_settings.top_k, "mode": "hybrid"}
         start = time.perf_counter()
         result = executor.execute("rag_search", tool_args)
-        hits = result.get("hits", [])
+        hits = _standardize_hits(result.get("hits", []))
         hit_count = len(hits)
-        top_score = max((float(hit.get("score", 0.0)) for hit in hits), default=None)
+        top_score = max((_hit_final_score(hit) for hit in hits), default=None)
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         return {
             "tool_name": "rag_search",
@@ -482,6 +546,11 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
                 hit_count=hit_count,
                 top_score=top_score,
                 retry_count=retry_count,
+                fusion_strategy=result.get("fusion_strategy", app_settings.fusion_strategy),
+                vector_hit_count=result.get("vector_hit_count"),
+                bm25_hit_count=result.get("bm25_hit_count"),
+                merged_hit_count=result.get("merged_hit_count"),
+                final_hit_count=result.get("final_hit_count", hit_count),
                 latency_ms=latency_ms,
             ),
         }
@@ -604,18 +673,30 @@ def build_agent_graph(kb: KnowledgeBase | None = None, app_settings: Settings = 
 
     def compress_node(state: AgentState) -> AgentState:
         start = time.perf_counter()
-        context, citations, kept_count = _compress_hits(state.get("retrieval_hits", []))
+        context, citations, citation_map, kept_count, compression_ratio = _compress_hits(
+            state.get("retrieval_hits", []),
+            char_budget=app_settings.context_char_budget,
+        )
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         return {
             "compressed_context": context,
             "citations": citations,
+            "citation_map": citation_map,
             "tool_trace": _trace(
                 state,
                 node="compress_node",
                 action="compress_context",
                 next_node="generate",
                 input_summary={"hit_count": state.get("hit_count", 0)},
-                output_summary={"kept_count": kept_count, "context_chars": len(context)},
+                output_summary={
+                    "kept_count": kept_count,
+                    "context_chars": len(context),
+                    "compression_ratio": compression_ratio,
+                    "context_char_budget": app_settings.context_char_budget,
+                },
+                final_hit_count=kept_count,
+                compression_ratio=compression_ratio,
+                context_char_count=len(context),
                 latency_ms=latency_ms,
             ),
         }

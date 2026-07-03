@@ -25,6 +25,7 @@ class AgentState(TypedDict, total=False):
     top_score: float | None
     hit_count: int
     compressed_context: str | None
+    citation_map: dict[str, dict[str, Any]]
     relevance_passed: bool
     answer: str
     citations: list[dict[str, Any]]

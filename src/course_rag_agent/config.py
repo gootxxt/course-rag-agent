@@ -43,9 +43,12 @@ class Settings:
     top_k: int = int(os.getenv("TOP_K", "5"))
     candidate_k: int = int(os.getenv("CANDIDATE_K", "20"))
     vector_weight: float = float(os.getenv("VECTOR_WEIGHT", "0.65"))
+    fusion_strategy: str = os.getenv("FUSION_STRATEGY", "weighted_score_fusion")
+    rrf_k: int = int(os.getenv("RRF_K", "60"))
     score_threshold: float = float(os.getenv("SCORE_THRESHOLD", "0.25"))
     max_retries: int = int(os.getenv("MAX_RETRIES", "2"))
     max_generation_retries: int = int(os.getenv("MAX_GENERATION_RETRIES", "1"))
+    context_char_budget: int = int(os.getenv("CONTEXT_CHAR_BUDGET", "4500"))
 
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")

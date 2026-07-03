@@ -12,6 +12,10 @@ Implemented:
 - Added rule-based self-check node after answer generation.
 - Added self-check routing for pass, regenerate, and final refusal.
 - Added self-check state fields and unit tests for citation validation.
+- Added configurable hybrid retrieval fusion strategies.
+- Added Reciprocal Rank Fusion support.
+- Standardized agent retrieval hits with vector, BM25, final score, and rank fields.
+- Upgraded context compression with citation map and compression diagnostics.
 
 ## v0.4.0 - LangGraph Conditional Routing Agent
 

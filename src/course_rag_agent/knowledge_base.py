@@ -101,6 +101,8 @@ class KnowledgeBase:
             top_k=top_k or self.settings.top_k,
             candidate_k=candidate_k or self.settings.candidate_k,
             vector_weight=self.settings.vector_weight,
+            fusion_strategy=self.settings.fusion_strategy,
+            rrf_k=self.settings.rrf_k,
             score_threshold=self.settings.score_threshold if score_threshold is None else score_threshold,
             mode=mode,
         )
@@ -114,6 +116,7 @@ class KnowledgeBase:
             "collection": self.settings.collection_name,
             "embedding_model": self.settings.embedding_model,
             "embedding_fallback": self.embeddings.using_fallback,
+            "fusion_strategy": self.settings.fusion_strategy,
         }
 
     def _sync_bm25_from_chroma(self) -> None:
