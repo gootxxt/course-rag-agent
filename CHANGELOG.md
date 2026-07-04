@@ -16,6 +16,7 @@ Implemented:
 - Added Reciprocal Rank Fusion support.
 - Standardized agent retrieval hits with vector, BM25, final score, and rank fields.
 - Upgraded context compression with citation map and compression diagnostics.
+- Added local evaluation dataset and script for retrieval, refusal, citation, self-check, rewrite, and latency metrics.
 
 ## v0.4.0 - LangGraph Conditional Routing Agent
 

@@ -32,6 +32,9 @@ storage/**
 !storage/**/
 !storage/**/.gitkeep
 
+# Generated evaluation reports
+data/eval/reports/
+
 # Private or copyrighted local documents
 data/my_docs/
 
