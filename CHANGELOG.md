@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Implemented:
+
+- Added query rewrite node for low-relevance retrieval.
+- Added retry loop from `relevance_check` to `rewrite` back to `retrieve`.
+- Added `retry_count`, `max_retries`, `rewritten_query`, and `rewrite_history` state fields.
+- Added loop guard so low-relevance queries are refused after retry limit.
+- Added Phase 3 documentation and demo commands.
+- Added rule-based self-check node after answer generation.
+- Added self-check routing for pass, regenerate, and final refusal.
+- Added self-check state fields and unit tests for citation validation.
+- Added configurable hybrid retrieval fusion strategies.
+- Added Reciprocal Rank Fusion support.
+- Standardized agent retrieval hits with vector, BM25, final score, and rank fields.
+- Upgraded context compression with citation map and compression diagnostics.
+- Added local evaluation dataset and script for retrieval, refusal, citation, self-check, rewrite, and latency metrics.
+
 ## v0.4.0 - LangGraph Conditional Routing Agent
 
 Current local milestone.

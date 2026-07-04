@@ -1,0 +1,8 @@
+{"id":"rag_basic_001","query":"RAG系统为什么需要检索增强生成？","expected_answer_keywords":["RAG","检索","生成"],"expected_sources":["rag_basics.md"],"should_refuse":false,"category":"normal"}
+{"id":"rag_bm25_001","query":"BM25 在课程资料检索里有什么作用？","expected_answer_keywords":["BM25","关键词"],"expected_sources":["rag_basics.md"],"should_refuse":false,"category":"normal"}
+{"id":"agent_tool_001","query":"Agent 和普通 RAG 有什么区别？","expected_answer_keywords":["Agent","工具","状态"],"expected_sources":["agent_notes.txt"],"should_refuse":false,"category":"normal"}
+{"id":"agent_interface_001","query":"CLI 和 FastAPI 分别适合什么场景？","expected_answer_keywords":["CLI","FastAPI"],"expected_sources":["agent_notes.txt"],"should_refuse":false,"category":"normal"}
+{"id":"stats_001","query":"现在知识库有多少文档和chunk？","expected_answer_keywords":["文档","chunks"],"expected_sources":[],"should_refuse":false,"category":"stats"}
+{"id":"ambiguous_001","query":"它怎么避免乱答？","expected_answer_keywords":["拒答","幻觉"],"expected_sources":["rag_basics.md"],"should_refuse":false,"category":"ambiguous"}
+{"id":"no_answer_001","query":"火星基地建设预算是多少？","expected_answer_keywords":[],"expected_sources":[],"should_refuse":true,"category":"no_answer"}
+{"id":"low_relevance_001","query":"这份资料里有没有量子通信实验参数？","expected_answer_keywords":[],"expected_sources":[],"should_refuse":true,"category":"low_relevance"}

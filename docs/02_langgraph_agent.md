@@ -129,14 +129,12 @@ Remove-Item Env:SCORE_THRESHOLD
 intent_node -> retrieve_node -> relevance_check_node -> final_node
 ```
 
-## 仍未实现
+## 后续阶段
 
 ```text
-query rewrite
-retry loop
 LLM self_check
 reranker
 benchmark
 ```
 
-这些属于后续阶段。
+query rewrite 和 retry loop 已在 `docs/03_query_rewrite_retry.md` 对应的 Phase 3 中实现。

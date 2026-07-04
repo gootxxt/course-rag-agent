@@ -142,14 +142,26 @@ class ToolExecutor:
     def execute(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         arguments = arguments or {}
         if name == "rag_search":
+            mode = arguments.get("mode", "hybrid")
+            candidate_k = arguments.get("candidate_k") or self.settings.candidate_k
             hits = self.kb.search(
                 query=arguments["query"],
                 top_k=arguments.get("top_k"),
-                candidate_k=arguments.get("candidate_k"),
+                candidate_k=candidate_k,
                 score_threshold=arguments.get("score_threshold"),
-                mode=arguments.get("mode", "hybrid"),
+                mode=mode,
             )
-            return {"hits": [hit.model_dump() for hit in hits]}
+            diagnostics = dict(self.kb.retriever.last_diagnostics)
+            vector_hit_count = len(hits) if mode == "vector" else None
+            bm25_hit_count = len(hits) if mode == "bm25" else None
+            return {
+                "hits": [hit.model_dump() for hit in hits],
+                "fusion_strategy": diagnostics.get("fusion_strategy", self.settings.fusion_strategy),
+                "vector_hit_count": diagnostics.get("vector_hit_count", vector_hit_count),
+                "bm25_hit_count": diagnostics.get("bm25_hit_count", bm25_hit_count),
+                "merged_hit_count": diagnostics.get("merged_hit_count", len(hits)),
+                "final_hit_count": diagnostics.get("final_hit_count", len(hits)),
+            }
 
         if name == "rag_ask":
             response = self.qa_service.ask(
@@ -195,4 +207,3 @@ class ToolExecutor:
             return self.kb.stats()
 
         raise ValueError(f"Unknown tool: {name}")
-

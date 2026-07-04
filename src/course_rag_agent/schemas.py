@@ -42,8 +42,10 @@ class RetrievalHit(BaseModel):
     start_pos: int
     end_pos: int
     chunk_index: int
-    vector_score: float = 0.0
-    bm25_score: float = 0.0
+    vector_score: float | None = None
+    bm25_score: float | None = None
+    final_score: float = 0.0
+    rank: int = 0
     score: float = 0.0
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -63,4 +65,3 @@ class AskResponse(BaseModel):
     retrieval_hits: list[RetrievalHit] = Field(default_factory=list)
     refused: bool = False
     reason: str | None = None
-

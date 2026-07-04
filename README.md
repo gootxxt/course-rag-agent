@@ -140,4 +140,61 @@ myAgent/
 - self_check 自检。
 - Recall@K / Precision@K / 拒答率评测。
 - 纯向量、纯 BM25、混合检索消融实验。
+## Local Evaluation
 
+The project includes a lightweight local eval script. It does not require LangSmith or RAGAS.
+
+Prepare sample documents:
+
+```powershell
+D:\Anaconda\envs\myAgent\python.exe -m course_rag_agent.cli add-dir data/sample_docs
+```
+
+Run eval:
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'
+D:\Anaconda\envs\myAgent\python.exe scripts/eval_rag_agent.py
+```
+
+Default eval data:
+
+```text
+data/eval/qa_eval.jsonl
+```
+
+Each JSONL sample has:
+
+```json
+{
+  "id": "rag_basic_001",
+  "query": "RAG系统为什么需要检索增强生成？",
+  "expected_answer_keywords": ["RAG", "检索", "生成"],
+  "expected_sources": ["rag_basics.md"],
+  "should_refuse": false,
+  "category": "normal"
+}
+```
+
+Generated reports:
+
+```text
+data/eval/reports/eval_report.json
+data/eval/reports/failed_cases.jsonl
+```
+
+Metrics:
+
+```text
+refusal_accuracy      Whether refuse / answer decisions match should_refuse.
+recall_at_k           Whether expected_sources appear in top-k retrieval hits.
+precision_at_k        Fraction of top-k hits matching expected_sources.
+citation_coverage     Whether final citations can be traced to retrieval_hits.
+self_check_pass_rate  Ratio of answers passing rule-based self-check.
+rewrite_trigger_rate  Ratio of samples that entered rewrite_node.
+rewrite_success_rate  Ratio of rewritten samples that eventually answered or passed relevance check.
+avg_latency_ms        Average end-to-end Agent latency.
+p95_latency_ms        95th percentile latency.
+```
+
+See `docs/06_local_eval.md` for details.
